@@ -1,178 +1,137 @@
-import { useState, useEffect } from "react";
-import productos from "../data/productos";
-import Carrito from "../components/Carrito";
-import CategoryButtons from "../components/CategoryButtons";
+import { useEffect, useMemo, useState } from "react";
+import PageHeader from "../components/layout/PageHeader";
+import CategoryButtons from "../components/ventas/CategoryButtons";
+import ProductGrid from "../components/ventas/ProductGrid";
+import Carrito from "../components/ventas/Carrito";
+import Card from "../components/ui/Card";
+import { STORAGE_KEYS } from "../constants/storageKeys";
+import { categoriaTieneStock } from "../constants/categorias";
+import PRODUCTOS_INICIALES from "../constants/productos";
+import { useLocalStorage } from "../hooks/useLocalStorage";
+import { formatSoles } from "../utils/currency";
+import { formatDateTime } from "../utils/date";
+import { normalizarInventarioVentas } from "../utils/inventarioVentas";
 
-function Ventas() {
+export default function Ventas() {
   const [categoria, setCategoria] = useState("hamburguesas");
   const [carrito, setCarrito] = useState([]);
-  const [ventas, setVentas] = useState([]);
-  const [inventario, setInventario] = useState(productos);
+  const [ventas, setVentas] = useLocalStorage(STORAGE_KEYS.VENTAS, []);
+  const [inventarioGuardado, setInventarioGuardado] = useLocalStorage(
+    STORAGE_KEYS.INVENTARIO,
+    PRODUCTOS_INICIALES
+  );
+
+  const inventario = useMemo(
+    () => normalizarInventarioVentas(inventarioGuardado),
+    [inventarioGuardado]
+  );
 
   useEffect(() => {
-    const ventasGuardadas = localStorage.getItem("ventas");
+    const normalizado = normalizarInventarioVentas(inventarioGuardado);
+    const necesitaActualizar =
+      JSON.stringify(normalizado) !== JSON.stringify(inventarioGuardado);
 
-    if (ventasGuardadas) {
-      setVentas(JSON.parse(ventasGuardadas));
+    if (necesitaActualizar) {
+      setInventarioGuardado(normalizado);
     }
-
-    const inventarioGuardado = localStorage.getItem("inventario");
-
-    if (inventarioGuardado) {
-      setInventario(JSON.parse(inventarioGuardado));
-    }
-  }, []);
+  }, [inventarioGuardado, setInventarioGuardado]);
 
   const agregarProducto = (producto) => {
-    if (producto.stock <= 0) {
-      alert("Producto agotado");
-      return;
+    if (categoriaTieneStock(categoria) && producto.stock <= 0) return;
+
+    if (categoriaTieneStock(categoria)) {
+      const nuevoInventario = { ...inventario };
+      nuevoInventario[categoria] = nuevoInventario[categoria].map((item) =>
+        item.nombre === producto.nombre
+          ? { ...item, stock: item.stock - 1 }
+          : item
+      );
+      setInventarioGuardado(nuevoInventario);
     }
 
-    const nuevoInventario = { ...inventario };
-
-    nuevoInventario[categoria] = nuevoInventario[categoria].map((item) =>
-      item.nombre === producto.nombre
-        ? { ...item, stock: item.stock - 1 }
-        : item
-    );
-
-    setInventario(nuevoInventario);
-
-    localStorage.setItem(
-      "inventario",
-      JSON.stringify(nuevoInventario)
-    );
-
-    setCarrito([...carrito, producto]);
+    setCarrito((prev) => [...prev, producto]);
   };
 
   const eliminarProducto = (index) => {
-    const productoEliminado = carrito[index];
-
-    const nuevoCarrito = [...carrito];
-    nuevoCarrito.splice(index, 1);
-
-    setCarrito(nuevoCarrito);
-
+    const producto = carrito[index];
+    const nuevoCarrito = carrito.filter((_, i) => i !== index);
     const nuevoInventario = { ...inventario };
+    let stockRestaurado = false;
 
-    Object.keys(nuevoInventario).forEach((categoriaActual) => {
-      nuevoInventario[categoriaActual] =
-        nuevoInventario[categoriaActual].map((item) =>
-          item.nombre === productoEliminado.nombre
-            ? { ...item, stock: item.stock + 1 }
-            : item
-        );
+    Object.keys(nuevoInventario).forEach((cat) => {
+      if (!categoriaTieneStock(cat)) return;
+
+      nuevoInventario[cat] = nuevoInventario[cat].map((item) => {
+        if (item.nombre === producto.nombre) {
+          stockRestaurado = true;
+          return { ...item, stock: item.stock + 1 };
+        }
+        return item;
+      });
     });
 
-    setInventario(nuevoInventario);
+    if (stockRestaurado) {
+      setInventarioGuardado(nuevoInventario);
+    }
 
-    localStorage.setItem(
-      "inventario",
-      JSON.stringify(nuevoInventario)
-    );
+    setCarrito(nuevoCarrito);
   };
 
   const finalizarVenta = () => {
-    if (carrito.length === 0) {
-      alert("No hay productos en el carrito");
-      return;
-    }
+    if (carrito.length === 0) return;
 
     const nuevaVenta = {
       id: Date.now(),
       productos: carrito,
-      total: carrito.reduce(
-        (acc, producto) => acc + producto.precio,
-        0
-      ),
-      fecha: new Date().toLocaleString(),
+      total: carrito.reduce((acc, p) => acc + p.precio, 0),
+      fecha: new Date().toISOString(),
     };
 
-    const nuevasVentas = [...ventas, nuevaVenta];
-
-    setVentas(nuevasVentas);
-
-    localStorage.setItem(
-      "ventas",
-      JSON.stringify(nuevasVentas)
-    );
-
+    setVentas((prev) => [...prev, nuevaVenta]);
     setCarrito([]);
-
-    alert("Venta registrada correctamente ✔");
   };
 
-  return (
-    <div>
-      <h2 className="section-title">🛒 Ventas</h2>
+  const ultimasVentas = [...ventas].reverse().slice(0, 5);
 
-      <CategoryButtons setCategoria={setCategoria} />
+  return (
+    <div className="page">
+      <PageHeader
+        title="Punto de venta"
+        description="Registra pedidos y finaliza ventas."
+      />
+
+      <CategoryButtons active={categoria} onSelect={setCategoria} />
 
       <div className="ventas-layout">
-        <div className="products">
-          {inventario[categoria]?.map((item, index) => (
-            <div className="product-card" key={index}>
-              <h3>{item.nombre}</h3>
+        <ProductGrid
+          products={inventario[categoria]}
+          showStock={categoriaTieneStock(categoria)}
+          onAdd={agregarProducto}
+        />
 
-              <p>S/ {item.precio}</p>
-
-              <p>
-                <strong>Stock:</strong> {item.stock}
-              </p>
-
-              <button
-                onClick={() => agregarProducto(item)}
-              >
-                Agregar
-              </button>
-            </div>
-          ))}
-        </div>
-
-        <div>
+        <div className="ventas-sidebar">
           <Carrito
-            carrito={carrito}
-            eliminarProducto={eliminarProducto}
+            items={carrito}
+            onRemove={eliminarProducto}
+            onCheckout={finalizarVenta}
           />
 
-          <button
-            className="finish-btn"
-            onClick={finalizarVenta}
-          >
-            Finalizar Venta
-          </button>
-
-          <div className="cart">
-            <h2>📊 Últimas ventas</h2>
-
-            {ventas.length === 0 ? (
-              <p>No hay ventas registradas.</p>
+          <Card title="Ventas recientes" subtitle="Últimos 5 registros">
+            {ultimasVentas.length === 0 ? (
+              <p className="text-muted">Sin ventas registradas.</p>
             ) : (
-              ventas
-                .slice(-5)
-                .reverse()
-                .map((venta) => (
-                  <div
-                    key={venta.id}
-                    className="cart-item"
-                  >
-                    <span>
-                      {venta.fecha}
-                    </span>
-
-                    <strong>
-                      S/ {venta.total}
-                    </strong>
-                  </div>
-                ))
+              <ul className="recent-list">
+                {ultimasVentas.map((venta) => (
+                  <li key={venta.id} className="recent-list__item">
+                    <span>{formatDateTime(venta.fecha)}</span>
+                    <strong>{formatSoles(venta.total)}</strong>
+                  </li>
+                ))}
+              </ul>
             )}
-          </div>
+          </Card>
         </div>
       </div>
     </div>
   );
 }
-
-export default Ventas;

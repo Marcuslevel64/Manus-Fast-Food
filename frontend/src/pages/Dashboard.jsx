@@ -1,62 +1,107 @@
-import { useState, useEffect } from "react";
+import { Link } from "react-router-dom";
+import PageHeader from "../components/layout/PageHeader";
+import StatCard from "../components/ui/StatCard";
+import Card from "../components/ui/Card";
+import Button from "../components/ui/Button";
+import Badge from "../components/ui/Badge";
+import { useFinanzas } from "../hooks/useFinanzas";
+import { formatSoles } from "../utils/currency";
+import { formatDateTime } from "../utils/date";
 
-function Dashboard() {
-  const [data, setData] = useState({
-    eventos: 0,
-    ingresos: 0,
-    gastos: 0,
-    beneficio: 0
-  });
+export default function Dashboard() {
+  const {
+    ventas,
+    totalIngresos,
+    totalGastos,
+    beneficio,
+    totalVentas,
+    totalProductos,
+    ingresosHoy,
+    egresosHoy,
+    gananciaHoy,
+    ventasTurno,
+  } = useFinanzas();
 
-  useEffect(() => {
-    // 1. Obtener datos del almacenamiento
-    const ventas = JSON.parse(localStorage.getItem("ventas") || "[]");
-    const gastos = JSON.parse(localStorage.getItem("gastos") || "[]");
-
-    // 2. Calcular totales
-    const numEventos = ventas.length;
-    const totalIngresos = ventas.reduce((acc, v) => acc + v.total, 0);
-    const totalGastos = gastos.reduce((acc, g) => acc + (Number(g.monto) || 0), 0);
-    const totalBeneficio = totalIngresos - totalGastos;
-
-    // 3. Actualizar estado
-    setData({
-      eventos: numEventos,
-      ingresos: totalIngresos,
-      gastos: totalGastos,
-      beneficio: totalBeneficio
-    });
-  }, []);
+  const ultimasVentas = [...ventas].reverse().slice(0, 5);
+  const cajaAbierta = ventasTurno > 0 || ingresosHoy > 0;
 
   return (
-    <div style={{ padding: "40px", fontFamily: "sans-serif" }}>
-      <h2 style={{ marginBottom: "30px", color: "#333" }}>Resumen Ejecutivo</h2>
-      
-      <div style={{ display: "flex", gap: "20px", flexWrap: "wrap" }}>
-        <Card title="Número de eventos realizados" value={data.eventos} color="#333" />
-        <Card title="Ingresos totales" value={`S/ ${data.ingresos.toFixed(3)}`} color="#003366" />
-        <Card title="Gastos totales" value={`S/ ${data.gastos.toFixed(3)}`} color="red" />
-        <Card title="Margen de beneficio" value={`S/ ${data.beneficio.toFixed(3)}`} color="green" />
-      </div>
+    <div className="page">
+      <PageHeader
+        title="Dashboard"
+        description="Resumen del turno actual y totales acumulados del negocio."
+        actions={
+          <Badge variant={cajaAbierta ? "success" : "default"}>
+            {cajaAbierta ? "Turno abierto" : "Sin movimientos"}
+          </Badge>
+        }
+      />
+
+      <section className="stat-grid">
+        <StatCard
+          label="Ingresos del turno"
+          value={formatSoles(ingresosHoy)}
+          trend={`Acumulado: ${formatSoles(totalIngresos)}`}
+          variant="primary"
+        />
+        <StatCard
+          label="Gastos del turno"
+          value={formatSoles(egresosHoy)}
+          trend={`Acumulado: ${formatSoles(totalGastos)}`}
+          variant="warning"
+        />
+        <StatCard
+          label="Beneficio del turno"
+          value={formatSoles(gananciaHoy)}
+          trend={`Acumulado: ${formatSoles(beneficio)}`}
+          variant={gananciaHoy >= 0 ? "success" : "danger"}
+        />
+        <StatCard
+          label="Ventas del turno"
+          value={ventasTurno}
+          trend={`${totalVentas} totales · ${totalProductos} productos`}
+        />
+      </section>
+
+      <Card
+        title="Cierre de caja"
+        subtitle="Al final del día, guarda los datos y reinicia para el siguiente turno."
+      >
+        <p className="text-muted cierre-dashboard__text">
+          Cuando termines de vender, ve a Cierre de caja para archivar el día y
+          empezar desde cero al día siguiente.
+        </p>
+        <Link to="/cierre-caja">
+          <Button>Ir a cierre de caja</Button>
+        </Link>
+      </Card>
+
+      <Card title="Últimas ventas del turno" subtitle="Actividad reciente">
+        {ultimasVentas.length === 0 ? (
+          <p className="text-muted">Aún no hay ventas en el turno actual.</p>
+        ) : (
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Fecha</th>
+                  <th>Productos</th>
+                  <th>Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ultimasVentas.map((venta) => (
+                  <tr key={venta.id}>
+                    <td>{formatDateTime(venta.fecha)}</td>
+                    <td>{venta.productos.length}</td>
+                    <td>{formatSoles(venta.total)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
     </div>
   );
 }
-
-// Componente para las tarjetas
-function Card({ title, value, color }) {
-  return (
-    <div style={{
-      border: "1px solid #ddd",
-      borderRadius: "8px",
-      padding: "20px",
-      width: "250px",
-      backgroundColor: "#fff",
-      boxShadow: "0 2px 4px rgba(0,0,0,0.1)"
-    }}>
-      <p style={{ margin: "0 0 10px 0", color: "#555", fontSize: "14px" }}>{title}</p>
-      <h3 style={{ margin: 0, fontSize: "28px", color: color }}>{value}</h3>
-    </div>
-  );
-}
-
-export default Dashboard;

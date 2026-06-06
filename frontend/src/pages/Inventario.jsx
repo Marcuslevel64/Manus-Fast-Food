@@ -1,178 +1,134 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
+import PageHeader from "../components/layout/PageHeader";
+import Card from "../components/ui/Card";
+import Button from "../components/ui/Button";
+import Badge from "../components/ui/Badge";
+import { STORAGE_KEYS } from "../constants/storageKeys";
+import { INSUMOS_INICIALES } from "../constants/insumos";
+import { useLocalStorage } from "../hooks/useLocalStorage";
 
-function Inventario() {
+export default function Inventario() {
   const [abierto, setAbierto] = useState(null);
+  const [insumos, setInsumos] = useLocalStorage(
+    STORAGE_KEYS.INSUMOS,
+    INSUMOS_INICIALES
+  );
 
-  const [insumos, setInsumos] = useState([
-    { nombre: "Pan", stock: 100 },
-    { nombre: "Carne", stock: 100 },
-    { nombre: "Papas", stock: 200 },
-    { nombre: "Queso", stock: 100 },
-    { nombre: "Tocino", stock: 50 },
-    {
-      nombre: "Gaseosas",
-      desplegable: true,
-      items: [
-        { nombre: "Coca Cola", stock: 30 },
-        { nombre: "Inca Kola", stock: 30 },
-        { nombre: "Seven Up", stock: 30 },
-        { nombre: "Chicha 1L", stock: 20 },
-        { nombre: "Piña 1L", stock: 20 }
-      ]
-    }
-  ]);
+  const actualizarStock = (nombre, delta, esGaseosa = false) => {
+    setInsumos((prev) =>
+      prev.map((item) => {
+        if (esGaseosa) {
+          if (!item.desplegable) return item;
+          return {
+            ...item,
+            items: item.items.map((g) =>
+              g.nombre === nombre
+                ? { ...g, stock: Math.max(0, g.stock + delta) }
+                : g
+            ),
+          };
+        }
 
-  useEffect(() => {
-    const data = localStorage.getItem("insumos");
-    
-    if (data) {
-      const parsedData = JSON.parse(data);
-      // Validamos si el localStorage ya tiene el formato nuevo revisando si Gaseosas es desplegable
-      const formatoNuevo = parsedData.some(item => item.nombre === "Gaseosas" && item.desplegable);
-      
-      if (formatoNuevo) {
-        setInsumos(parsedData); // Si el formato es correcto, usamos la memoria
-      } else {
-        // Si es el formato viejo, lo sobreescribimos automáticamente con el nuevo
-        localStorage.setItem("insumos", JSON.stringify(insumos));
-      }
-    } else {
-      localStorage.setItem("insumos", JSON.stringify(insumos));
-    }
-  }, []); // Solo se ejecuta al cargar el componente
-
-  const guardarInsumos = (data) => {
-    setInsumos(data);
-    localStorage.setItem("insumos", JSON.stringify(data));
-  };
-
-  // INSUMOS NORMALES
-  const cambiarStock = (nombre, tipo) => {
-    const nuevo = insumos.map((item) => {
-      if (item.nombre === nombre) {
-        return {
-          ...item,
-          stock: tipo === "sumar" ? item.stock + 1 : item.stock - 1
-        };
-      }
-      return item;
-    });
-
-    guardarInsumos(nuevo);
-  };
-
-  // GASEOSAS
-  const cambiarGaseosa = (nombre, tipo) => {
-    const nuevo = insumos.map((item) => {
-      if (item.nombre === "Gaseosas") {
-        return {
-          ...item,
-          items: item.items.map((g) =>
-            g.nombre === nombre
-              ? {
-                  ...g,
-                  stock: tipo === "sumar" ? g.stock + 1 : g.stock - 1
-                }
-              : g
-          )
-        };
-      }
-      return item;
-    });
-
-    guardarInsumos(nuevo);
+        if (item.nombre !== nombre || item.desplegable) return item;
+        return { ...item, stock: Math.max(0, item.stock + delta) };
+      })
+    );
   };
 
   return (
-    <div>
-      <h1>📦 Inventario</h1>
+    <div className="page">
+      <PageHeader
+        title="Inventario de insumos"
+        description="Control de materia prima y productos de reposición."
+      />
 
-      <div className="card">
-        <h2>Stock</h2>
+      <Card title="Stock actual" subtitle="Ajusta cantidades según entradas y salidas">
+        <div className="inventory-list">
+          {insumos.map((item) => (
+            <div key={item.nombre} className="inventory-item">
+              {item.desplegable ? (
+                <button
+                  type="button"
+                  className="inventory-item__header inventory-item__header--clickable"
+                  onClick={() =>
+                    setAbierto(abierto === item.nombre ? null : item.nombre)
+                  }
+                >
+                  <span className="inventory-item__name">{item.nombre}</span>
+                  <span className="inventory-item__toggle">
+                    {abierto === item.nombre ? "▲" : "▼"}
+                  </span>
+                </button>
+              ) : (
+                <div className="inventory-item__header">
+                  <span className="inventory-item__name">{item.nombre}</span>
+                  <Badge variant={item.stock < 20 ? "warning" : "default"}>
+                    {item.stock} uds.
+                  </Badge>
+                </div>
+              )}
 
-        {insumos.map((item) => (
-          <div key={item.nombre} className="cart-item">
+              {!item.desplegable && (
+                <div className="inventory-item__actions">
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => actualizarStock(item.nombre, -1)}
+                  >
+                    −
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    onClick={() => actualizarStock(item.nombre, 1)}
+                  >
+                    +
+                  </Button>
+                </div>
+              )}
 
-            {/* HEADER */}
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                cursor: "pointer"
-              }}
-              onClick={() =>
-                setAbierto(abierto === item.nombre ? null : item.nombre)
-              }
-            >
-              <strong>{item.nombre}</strong>
-
-              {item.desplegable && (
-                <span>{abierto === item.nombre ? "▲" : "▼"}</span>
+              {item.desplegable && abierto === item.nombre && (
+                <div className="inventory-sublist">
+                  {item.items.map((gaseosa) => (
+                    <div key={gaseosa.nombre} className="inventory-subitem">
+                      <div>
+                        <p className="inventory-subitem__name">
+                          {gaseosa.nombre}
+                        </p>
+                        <Badge
+                          variant={gaseosa.stock < 10 ? "warning" : "default"}
+                        >
+                          {gaseosa.stock} uds.
+                        </Badge>
+                      </div>
+                      <div className="inventory-item__actions">
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onClick={() =>
+                            actualizarStock(gaseosa.nombre, -1, true)
+                          }
+                        >
+                          −
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="primary"
+                          onClick={() =>
+                            actualizarStock(gaseosa.nombre, 1, true)
+                          }
+                        >
+                          +
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               )}
             </div>
-
-            {/* STOCK NORMAL */}
-            {!item.desplegable && (
-              <div style={{ marginTop: "10px" }}>
-                Stock: {item.stock}
-
-                <button
-                  style={{ marginLeft: "10px", marginRight: "5px" }}
-                  onClick={() => cambiarStock(item.nombre, "sumar")}
-                >
-                  ➕
-                </button>
-
-                <button onClick={() => cambiarStock(item.nombre, "restar")}>
-                  ➖
-                </button>
-              </div>
-            )}
-
-            {/* GASEOSAS */}
-            {item.desplegable && abierto === item.nombre && (
-              <div style={{ marginTop: 10 }}>
-                {item.items.map((g) => (
-                  <div
-                    key={g.nombre}
-                    className="cart-item"
-                    style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      marginTop: "10px",
-                      padding: "10px",
-                      background: "rgba(0,0,0,0.2)", // Un fondo ligero para que resalte
-                      borderRadius: "5px"
-                    }}
-                  >
-                    <div>
-                      {g.nombre}
-                      <br />
-                      Stock: {g.stock}
-                    </div>
-
-                    <div>
-                      <button
-                        style={{ marginRight: "5px" }}
-                        onClick={() => cambiarGaseosa(g.nombre, "sumar")}
-                      >
-                        ➕
-                      </button>
-
-                      <button onClick={() => cambiarGaseosa(g.nombre, "restar")}>
-                        ➖
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      </Card>
     </div>
   );
 }
-
-export default Inventario;
