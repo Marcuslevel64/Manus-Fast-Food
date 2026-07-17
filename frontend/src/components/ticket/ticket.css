@@ -1,0 +1,113 @@
+.ticket {
+  width: 58mm;
+  max-width: 58mm;
+  font-family: "Courier New", Courier, monospace;
+  font-size: 12px;
+  line-height: 1.35;
+  padding: 8px 6px;
+  background: #fff;
+  color: #000;
+}
+
+.ticket__header {
+  text-align: center;
+  margin-bottom: 8px;
+}
+
+.ticket__brand {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.ticket__tagline {
+  margin: 2px 0 0;
+  font-size: 11px;
+}
+
+.ticket__meta p {
+  margin: 0 0 3px;
+}
+
+.ticket__divider {
+  border-top: 1px dashed #000;
+  margin: 8px 0;
+}
+
+.ticket__items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.ticket__row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 4px 0;
+}
+
+.ticket__item-name {
+  flex: 1;
+  word-break: break-word;
+}
+
+.ticket__item-price {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.ticket__total {
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.ticket__footer {
+  text-align: center;
+  margin-top: 4px;
+}
+
+.ticket__footer p {
+  margin: 0;
+}
+
+.ticket-print-area {
+  position: fixed;
+  left: -9999px;
+  top: 0;
+  width: 58mm;
+  pointer-events: none;
+}
+
+@media print {
+  @page {
+    size: 58mm auto;
+    margin: 2mm;
+  }
+
+  body * {
+    visibility: hidden !important;
+  }
+
+  .ticket-print-area,
+  .ticket-print-area * {
+    visibility: visible !important;
+  }
+
+  .ticket-print-area {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 58mm;
+    pointer-events: none;
+  }
+
+  .ticket {
+    width: 58mm;
+    max-width: 58mm;
+    padding: 0;
+    box-shadow: none;
+  }
+}
