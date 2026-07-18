@@ -1,14 +1,58 @@
-import { buildEscPosTicket } from "./escpos";
+import { buildEscPosTicket, buildEscPosTest } from "./escpos";
 
+// UUIDs de servicio que usan la mayoria de impresoras termicas BLE baratas.
+// Se agrego el set FFF0/FFF1/FFF2, que es el mas comun en impresoras
+// genericas chinas (POS-58 y similares) y NO estaba antes en la lista,
+// lo que probablemente causaba que "se conectaba" pero no encontraba
+// ninguna caracteristica escribible.
 const COMMON_SERVICES = [
   "0000ff00-0000-1000-8000-00805f9b34fb",
+  "0000ff01-0000-1000-8000-00805f9b34fb",
+  "0000ff02-0000-1000-8000-00805f9b34fb",
+  "0000fff0-0000-1000-8000-00805f9b34fb",
+  "0000fff1-0000-1000-8000-00805f9b34fb",
+  "0000fff2-0000-1000-8000-00805f9b34fb",
   "49535343-fe7d-4ae5-8fa7-afabb767bf78",
   "000018f0-0000-1000-8000-00805f9b34fb",
   "6e400001-b5a3-f393-e0a9-e50e24dcca9e",
+  "00001101-0000-1000-8000-00805f9b34fb",
+  "0000fee7-0000-1000-8000-00805f9b34fb",
+  "0000ae30-0000-1000-8000-00805f9b34fb",
+  "0000ae01-0000-1000-8000-00805f9b34fb",
+  "e7810a71-73ae-499d-8c15-faa9aef0c3f2",
 ];
 
-const CHUNK_SIZE = 180;
+const PREFERRED_WRITE_UUIDS = [
+  "0000fff2-0000-1000-8000-00805f9b34fb",
+  "0000ff02-0000-1000-8000-00805f9b34fb",
+  "0000ff01-0000-1000-8000-00805f9b34fb",
+  "49535343-8841-43f4-a8d4-ecbe34729bb3",
+  "6e400002-b5a3-f393-e0a9-e50e24dcca9e",
+  "0000ae01-0000-1000-8000-00805f9b34fb",
+];
+
 const STORAGE_KEY = "manus_bt_printer";
+const CHUNK_SIZE = 20;
+const CHUNK_DELAY_MS = 40;
+const WRITE_RETRIES = 2;
+
+let activeConnection = null;
+
+// Candado para que dos impresiones no se ejecuten al mismo tiempo sobre
+// el mismo dispositivo. Esto evita el error tipico:
+// "GATT operation already in progress".
+let printLock = Promise.resolve();
+
+function withPrintLock(task) {
+  const run = printLock.then(task, task);
+  // Encadenamos ignorando el resultado/errores para que el candado
+  // siempre quede libre para el siguiente intento.
+  printLock = run.then(
+    () => undefined,
+    () => undefined
+  );
+  return run;
+}
 
 export function isBluetoothSupported() {
   return typeof navigator !== "undefined" && "bluetooth" in navigator;
@@ -34,38 +78,167 @@ function savePrinterName(name) {
   }
 }
 
-async function findWritableCharacteristic(server) {
-  const services = await server.getPrimaryServices();
+function scoreCharacteristic(characteristic) {
+  const uuid = characteristic.uuid.toLowerCase();
+  const preferredIndex = PREFERRED_WRITE_UUIDS.findIndex(
+    (value) => value.toLowerCase() === uuid
+  );
 
-  for (const service of services) {
-    const characteristics = await service.getCharacteristics();
+  let score = preferredIndex >= 0 ? 100 - preferredIndex : 0;
 
-    for (const characteristic of characteristics) {
-      if (characteristic.properties.writeWithoutResponse) {
-        return characteristic;
-      }
+  if (characteristic.properties.writeWithoutResponse) score += 20;
+  if (characteristic.properties.write) score += 10;
 
-      if (characteristic.properties.write) {
-        return characteristic;
+  return score;
+}
+
+async function findWritableCharacteristics(server) {
+  const characteristics = [];
+  const discoveredServices = [];
+
+  try {
+    const services = await server.getPrimaryServices();
+
+    for (const service of services) {
+      discoveredServices.push(service.uuid);
+      const serviceCharacteristics = await service.getCharacteristics();
+
+      for (const characteristic of serviceCharacteristics) {
+        if (
+          characteristic.properties.writeWithoutResponse ||
+          characteristic.properties.write
+        ) {
+          characteristics.push(characteristic);
+        }
       }
     }
+  } catch (error) {
+    throw new Error(
+      `No se pudieron leer los servicios de la impresora: ${error.message}`,
+      { cause: error }
+    );
   }
 
-  return null;
+  characteristics.sort((a, b) => scoreCharacteristic(b) - scoreCharacteristic(a));
+
+  return { characteristics, discoveredServices };
 }
 
 async function writeInChunks(characteristic, data) {
   for (let offset = 0; offset < data.length; offset += CHUNK_SIZE) {
     const chunk = data.slice(offset, offset + CHUNK_SIZE);
+    let attempt = 0;
 
-    if (characteristic.properties.writeWithoutResponse) {
-      await characteristic.writeValueWithoutResponse(chunk);
-    } else {
-      await characteristic.writeValue(chunk);
+    // Reintenta cada chunk unas cuantas veces antes de rendirse. Esto
+    // ayuda cuando el enlace BLE se pone lento y una escritura falla
+    // de forma aislada.
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      try {
+        if (characteristic.properties.writeWithoutResponse) {
+          await characteristic.writeValueWithoutResponse(chunk);
+        } else {
+          await characteristic.writeValue(chunk);
+        }
+        break;
+      } catch (error) {
+        attempt += 1;
+        if (attempt > WRITE_RETRIES) {
+          throw error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, CHUNK_DELAY_MS * 2));
+      }
     }
 
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    await new Promise((resolve) => setTimeout(resolve, CHUNK_DELAY_MS));
   }
+}
+
+async function writeWithFallback(characteristics, data) {
+  let lastError = null;
+
+  for (const characteristic of characteristics) {
+    try {
+      await writeInChunks(characteristic, data);
+      return characteristic;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw new Error(
+    lastError?.message ||
+      "La impresora recibio la conexion pero no acepto los datos de impresion."
+  );
+}
+
+async function ensureGattConnected(device) {
+  if (!device.gatt) {
+    throw new Error(
+      "Esta impresora usa Bluetooth clasico y no es compatible con impresion directa desde el navegador. Usa el boton Imprimir con la ticketera agregada en Windows."
+    );
+  }
+
+  if (device.gatt.connected) {
+    return device.gatt;
+  }
+
+  return device.gatt.connect();
+}
+
+export function getActiveConnection() {
+  return activeConnection;
+}
+
+export function disconnectBluetoothPrinter() {
+  if (activeConnection?.server?.connected) {
+    activeConnection.server.disconnect();
+  }
+
+  activeConnection = null;
+}
+
+export async function reconnectSavedPrinter() {
+  if (!isBluetoothSupported() || !navigator.bluetooth.getDevices) {
+    return null;
+  }
+
+  const savedName = getSavedPrinterName();
+  if (!savedName) return null;
+
+  const devices = await navigator.bluetooth.getDevices();
+  const device = devices.find((item) => item.name === savedName);
+
+  if (!device) return null;
+
+  const server = await ensureGattConnected(device);
+  const { characteristics, discoveredServices } = await findWritableCharacteristics(
+    server
+  );
+
+  if (characteristics.length === 0) {
+    throw new Error(
+      buildNoWritableCharMessage(discoveredServices)
+    );
+  }
+
+  activeConnection = {
+    device,
+    server,
+    characteristics,
+    characteristic: characteristics[0],
+  };
+
+  return activeConnection;
+}
+
+function buildNoWritableCharMessage(discoveredServices) {
+  const servicesText =
+    discoveredServices.length > 0
+      ? `Servicios detectados: ${discoveredServices.join(", ")}.`
+      : "No se detecto ningun servicio (probablemente el servicio real de la impresora no esta en la lista de optionalServices).";
+
+  return `La impresora se conecto pero no se encontro un canal de escritura BLE. ${servicesText} Comparte estos UUID para agregarlos a la lista de servicios soportados, o usa el boton Imprimir.`;
 }
 
 export async function connectBluetoothPrinter() {
@@ -73,51 +246,124 @@ export async function connectBluetoothPrinter() {
     throw new Error("Tu navegador no soporta Bluetooth. Usa Chrome o Edge.");
   }
 
-  const device = await navigator.bluetooth.requestDevice({
-    acceptAllDevices: true,
-    optionalServices: COMMON_SERVICES,
-  });
-
-  const server = await device.gatt.connect();
-  const characteristic = await findWritableCharacteristic(server);
-
-  if (!characteristic) {
-    server.disconnect();
+  if (!window.isSecureContext) {
     throw new Error(
-      "No se encontro una caracteristica de escritura compatible con esta impresora."
+      "Bluetooth solo funciona en HTTPS o localhost. Abre la app desde una conexion segura."
     );
+  }
+
+  let device;
+
+  try {
+    device = await navigator.bluetooth.requestDevice({
+      acceptAllDevices: true,
+      optionalServices: COMMON_SERVICES,
+    });
+  } catch (error) {
+    if (error?.name === "NotFoundError") {
+      throw error;
+    }
+
+    throw new Error(
+      "No se pudo seleccionar la impresora. Si ya esta emparejada en Windows, desemparejala e intenta de nuevo desde Chrome.",
+      { cause: error }
+    );
+  }
+
+  const server = await ensureGattConnected(device);
+  const { characteristics, discoveredServices } = await findWritableCharacteristics(
+    server
+  );
+
+  if (characteristics.length === 0) {
+    server.disconnect();
+    throw new Error(buildNoWritableCharMessage(discoveredServices));
   }
 
   savePrinterName(device.name || "Impresora Bluetooth");
 
-  return { device, server, characteristic };
+  activeConnection = {
+    device,
+    server,
+    characteristics,
+    characteristic: characteristics[0],
+  };
+
+  device.addEventListener("gattserverdisconnected", () => {
+    if (activeConnection?.device?.id === device.id) {
+      activeConnection = null;
+    }
+  });
+
+  return activeConnection;
 }
 
-export async function printPedidoBluetooth(pedido, connection = null) {
-  const data = buildEscPosTicket(pedido);
-  let server = connection?.server;
-  let characteristic = connection?.characteristic;
-  let device = connection?.device;
-  let shouldDisconnect = false;
+async function resolveConnection(connection = null) {
+  if (
+    (connection?.characteristics?.length || connection?.characteristic) &&
+    connection?.server?.connected
+  ) {
+    return connection;
+  }
 
-  if (!characteristic) {
-    const linked = await connectBluetoothPrinter();
-    device = linked.device;
-    server = linked.server;
-    characteristic = linked.characteristic;
-    shouldDisconnect = true;
+  if (activeConnection?.server?.connected) {
+    return activeConnection;
   }
 
   try {
-    await writeInChunks(characteristic, data);
-    return device?.name || getSavedPrinterName() || "Impresora Bluetooth";
-  } finally {
-    if (shouldDisconnect && server?.connected) {
-      server.disconnect();
-    }
+    const reconnected = await reconnectSavedPrinter();
+    if (reconnected) return reconnected;
+  } catch {
+    // fall back to picker
   }
+
+  return connectBluetoothPrinter();
+}
+
+async function printRawBluetoothInternal(data, connection) {
+  const linked = await resolveConnection(connection);
+  const characteristics =
+    linked.characteristics ||
+    (linked.characteristic ? [linked.characteristic] : []);
+
+  if (characteristics.length === 0) {
+    throw new Error("No hay impresora conectada.");
+  }
+
+  const usedCharacteristic = await writeWithFallback(characteristics, data);
+
+  activeConnection = {
+    ...linked,
+    characteristic: usedCharacteristic,
+    characteristics,
+  };
+
+  return linked.device?.name || getSavedPrinterName() || "Impresora Bluetooth";
+}
+
+export function printRawBluetooth(data, connection = null) {
+  // Todas las impresiones pasan por el candado para que nunca se ejecuten
+  // dos escrituras GATT al mismo tiempo sobre el mismo dispositivo.
+  return withPrintLock(() => printRawBluetoothInternal(data, connection));
+}
+
+export async function printTestBluetooth(connection = null) {
+  return printRawBluetooth(buildEscPosTest(), connection);
+}
+
+export async function printPedidoBluetooth(pedido, connection = null) {
+  return printRawBluetooth(buildEscPosTicket(pedido), connection);
 }
 
 export function printPedidoNavegador() {
   window.print();
+}
+
+export function getBluetoothHelpMessage() {
+  return [
+    "Usa Chrome o Edge en PC o Android.",
+    "Si la ticketera ya esta emparejada en Windows, desemparejala antes de usar Bluetooth.",
+    "Muchas ticketeras baratas solo funcionan con el boton Imprimir (Bluetooth clasico).",
+    "Agrega la impresora en Configuracion > Impresoras de Windows y usa Imprimir.",
+  ];
 }
