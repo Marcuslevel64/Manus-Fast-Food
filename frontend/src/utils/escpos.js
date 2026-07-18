@@ -43,6 +43,19 @@ function padLine(left, right, width = 32) {
   return `${trimmedLeft}${" ".repeat(spaces)}${right}`;
 }
 
+export function buildEscPosTest() {
+  return concat(
+    cmd(ESC, 0x40),
+    cmd(ESC, 0x61, 0x01),
+    line("MANUS FAST FOOD"),
+    line("Prueba de impresion"),
+    line(""),
+    line("Si ves esto, Bluetooth funciona."),
+    line(""),
+    line(""),
+  );
+}
+
 export function buildEscPosTicket(pedido) {
   const fecha = pedido.fecha instanceof Date ? pedido.fecha : new Date(pedido.fecha);
   const fechaTexto = fecha.toLocaleString("es-PE", {
@@ -84,7 +97,6 @@ export function buildEscPosTicket(pedido) {
     line("Gracias por su compra!"),
     line(""),
     line(""),
-    cmd(GS, 0x56, 0x00)
   );
 
   return concat(...chunks);
