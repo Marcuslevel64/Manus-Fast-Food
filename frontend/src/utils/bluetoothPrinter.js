@@ -1,10 +1,5 @@
 import { buildEscPosTicket, buildEscPosTest } from "./escpos";
 
-// UUIDs de servicio que usan la mayoria de impresoras termicas BLE baratas.
-// Se agrego el set FFF0/FFF1/FFF2, que es el mas comun en impresoras
-// genericas chinas (POS-58 y similares) y NO estaba antes en la lista,
-// lo que probablemente causaba que "se conectaba" pero no encontraba
-// ninguna caracteristica escribible.
 const COMMON_SERVICES = [
   "0000ff00-0000-1000-8000-00805f9b34fb",
   "0000ff01-0000-1000-8000-00805f9b34fb",
@@ -37,16 +32,10 @@ const CHUNK_DELAY_MS = 40;
 const WRITE_RETRIES = 2;
 
 let activeConnection = null;
-
-// Candado para que dos impresiones no se ejecuten al mismo tiempo sobre
-// el mismo dispositivo. Esto evita el error tipico:
-// "GATT operation already in progress".
 let printLock = Promise.resolve();
 
 function withPrintLock(task) {
   const run = printLock.then(task, task);
-  // Encadenamos ignorando el resultado/errores para que el candado
-  // siempre quede libre para el siguiente intento.
   printLock = run.then(
     () => undefined,
     () => undefined
@@ -125,24 +114,28 @@ async function findWritableCharacteristics(server) {
 }
 
 async function writeInChunks(characteristic, data) {
+  console.log("DEBUG BT: escribiendo en", characteristic.uuid, {
+    write: characteristic.properties.write,
+    writeWithoutResponse: characteristic.properties.writeWithoutResponse,
+    dataLength: data.length,
+  });
+
   for (let offset = 0; offset < data.length; offset += CHUNK_SIZE) {
     const chunk = data.slice(offset, offset + CHUNK_SIZE);
     let attempt = 0;
 
-    // Reintenta cada chunk unas cuantas veces antes de rendirse. Esto
-    // ayuda cuando el enlace BLE se pone lento y una escritura falla
-    // de forma aislada.
     // eslint-disable-next-line no-constant-condition
     while (true) {
       try {
-        if (characteristic.properties.writeWithoutResponse) {
-          await characteristic.writeValueWithoutResponse(chunk);
-        } else {
+        if (characteristic.properties.write) {
           await characteristic.writeValue(chunk);
+        } else {
+          await characteristic.writeValueWithoutResponse(chunk);
         }
         break;
       } catch (error) {
         attempt += 1;
+        console.log("DEBUG BT: error escribiendo chunk, intento", attempt, error);
         if (attempt > WRITE_RETRIES) {
           throw error;
         }
@@ -152,6 +145,8 @@ async function writeInChunks(characteristic, data) {
 
     await new Promise((resolve) => setTimeout(resolve, CHUNK_DELAY_MS));
   }
+
+  console.log("DEBUG BT: terminado de escribir todos los chunks");
 }
 
 async function writeWithFallback(characteristics, data) {
@@ -217,9 +212,7 @@ export async function reconnectSavedPrinter() {
   );
 
   if (characteristics.length === 0) {
-    throw new Error(
-      buildNoWritableCharMessage(discoveredServices)
-    );
+    throw new Error(buildNoWritableCharMessage(discoveredServices));
   }
 
   activeConnection = {
@@ -342,8 +335,6 @@ async function printRawBluetoothInternal(data, connection) {
 }
 
 export function printRawBluetooth(data, connection = null) {
-  // Todas las impresiones pasan por el candado para que nunca se ejecuten
-  // dos escrituras GATT al mismo tiempo sobre el mismo dispositivo.
   return withPrintLock(() => printRawBluetoothInternal(data, connection));
 }
 
